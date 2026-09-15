@@ -4,15 +4,20 @@ Lifecycle:
 PENDING -> FUNDS_CLEARED -> PO_SENT -> SHIPPED -> DELIVERED -> RELEASED
                                                 -> FROZEN / REFUNDED
 
-The schema keeps Stripe Checkout Session, PaymentIntent, and Charge IDs
-separate so supplier transfers can use the correct source transaction and
-webhooks can reconcile without guessing.
+SQLite is retained for local/manual staging. When DATABASE_URL is configured
+with a PostgreSQL URL, the same public ledger API uses PostgreSQL instead so a
+serverless deployment can persist order state durably.
 """
+from __future__ import annotations
+
 import sqlite3
 import time
 import uuid
 from enum import Enum
 from typing import Any
+
+import psycopg
+from psycopg.rows import dict_row
 
 from .config import settings
 
@@ -28,7 +33,7 @@ class POState(str, Enum):
     REFUNDED = "refunded"
 
 
-SCHEMA = """
+SQLITE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS purchase_orders (
     id TEXT PRIMARY KEY,
     quote_id TEXT NOT NULL DEFAULT '',
@@ -51,12 +56,42 @@ CREATE TABLE IF NOT EXISTS purchase_orders (
 );
 """
 
-MIGRATIONS = {
+POSTGRES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS purchase_orders (
+    id TEXT PRIMARY KEY,
+    quote_id TEXT NOT NULL DEFAULT '',
+    created_at DOUBLE PRECISION NOT NULL,
+    updated_at DOUBLE PRECISION NOT NULL,
+    state TEXT NOT NULL,
+    buyer_email TEXT NOT NULL,
+    supplier_id TEXT NOT NULL,
+    supplier_total_usd DOUBLE PRECISION NOT NULL,
+    list_price_usd DOUBLE PRECISION NOT NULL,
+    spread_usd DOUBLE PRECISION NOT NULL,
+    stripe_session_id TEXT,
+    stripe_payment_intent_id TEXT,
+    stripe_charge_id TEXT,
+    stripe_transfer_id TEXT,
+    tracking_number TEXT,
+    dispute_open INTEGER NOT NULL DEFAULT 0,
+    manual_approved INTEGER NOT NULL DEFAULT 0,
+    notes TEXT NOT NULL DEFAULT ''
+);
+"""
+
+SQLITE_MIGRATIONS = {
     "quote_id": "ALTER TABLE purchase_orders ADD COLUMN quote_id TEXT NOT NULL DEFAULT ''",
     "stripe_session_id": "ALTER TABLE purchase_orders ADD COLUMN stripe_session_id TEXT",
     "stripe_payment_intent_id": "ALTER TABLE purchase_orders ADD COLUMN stripe_payment_intent_id TEXT",
     "stripe_charge_id": "ALTER TABLE purchase_orders ADD COLUMN stripe_charge_id TEXT",
 }
+
+POSTGRES_MIGRATIONS = (
+    "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS quote_id TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS stripe_session_id TEXT",
+    "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS stripe_payment_intent_id TEXT",
+    "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS stripe_charge_id TEXT",
+)
 
 ALLOWED_UPDATE_FIELDS = {
     "quote_id",
@@ -71,13 +106,39 @@ ALLOWED_UPDATE_FIELDS = {
 }
 
 
-def _db() -> sqlite3.Connection:
+def _use_postgres() -> bool:
+    return settings.durable_database_configured
+
+
+def _postgres_dsn() -> str:
+    url = settings.database_url
+    if url.lower().startswith("postgres://"):
+        return "postgresql://" + url[len("postgres://"):]
+    return url
+
+
+def _sql(query: str) -> str:
+    """Translate the small ledger query set to the active DB parameter style."""
+    return query.replace("?", "%s") if _use_postgres() else query
+
+
+def _db():
+    if _use_postgres():
+        conn = psycopg.connect(_postgres_dsn(), row_factory=dict_row)
+        conn.execute(POSTGRES_SCHEMA)
+        for ddl in POSTGRES_MIGRATIONS:
+            conn.execute(ddl)
+        conn.commit()
+        return conn
+
     conn = sqlite3.connect(settings.database_path)
-    conn.execute(SCHEMA)
+    conn.row_factory = sqlite3.Row
+    conn.execute(SQLITE_SCHEMA)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(purchase_orders)").fetchall()}
-    for name, ddl in MIGRATIONS.items():
+    for name, ddl in SQLITE_MIGRATIONS.items():
         if name not in columns:
             conn.execute(ddl)
+    conn.commit()
     return conn
 
 
@@ -87,11 +148,13 @@ def create_po(*, quote_id: str, buyer_email: str, supplier_id: str,
     now = time.time()
     with _db() as conn:
         conn.execute(
-            """INSERT INTO purchase_orders
-               (id, quote_id, created_at, updated_at, state, buyer_email,
-                supplier_id, supplier_total_usd, list_price_usd, spread_usd,
-                dispute_open, manual_approved)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            _sql(
+                """INSERT INTO purchase_orders
+                   (id, quote_id, created_at, updated_at, state, buyer_email,
+                    supplier_id, supplier_total_usd, list_price_usd, spread_usd,
+                    dispute_open, manual_approved)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"""
+            ),
             (po_id, quote_id, now, now, POState.PENDING.value, buyer_email,
              supplier_id, supplier_total_usd, list_price_usd,
              round(list_price_usd - supplier_total_usd, 2), 0, 0),
@@ -101,8 +164,7 @@ def create_po(*, quote_id: str, buyer_email: str, supplier_id: str,
 
 def _one(query: str, value: str) -> dict | None:
     with _db() as conn:
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(query, (value,)).fetchone()
+        row = conn.execute(_sql(query), (value,)).fetchone()
         return dict(row) if row else None
 
 
@@ -149,7 +211,7 @@ def set_state(po_id: str, state: POState, **fields: Any) -> None:
         vals.append(value)
     vals.append(po_id)
     with _db() as conn:
-        conn.execute(f"UPDATE purchase_orders SET {', '.join(sets)} WHERE id=?", vals)
+        conn.execute(_sql(f"UPDATE purchase_orders SET {', '.join(sets)} WHERE id=?"), vals)
 
 
 def update_po(po_id: str, **fields: Any) -> None:
@@ -170,10 +232,9 @@ def append_note(po_id: str, note: str) -> None:
 
 def list_pos(state: POState | None = None) -> list[dict]:
     with _db() as conn:
-        conn.row_factory = sqlite3.Row
         if state:
             rows = conn.execute(
-                "SELECT * FROM purchase_orders WHERE state=? ORDER BY created_at DESC",
+                _sql("SELECT * FROM purchase_orders WHERE state=? ORDER BY created_at DESC"),
                 (state.value,),
             ).fetchall()
         else:
