@@ -99,41 +99,43 @@ def create_po(*, quote_id: str, buyer_email: str, supplier_id: str,
     return po_id
 
 
-def get_po(po_id: str) -> dict | None:
+def _one(query: str, value: str) -> dict | None:
     with _db() as conn:
         conn.row_factory = sqlite3.Row
-        row = conn.execute("SELECT * FROM purchase_orders WHERE id=?", (po_id,)).fetchone()
+        row = conn.execute(query, (value,)).fetchone()
         return dict(row) if row else None
+
+
+def get_po(po_id: str) -> dict | None:
+    return _one("SELECT * FROM purchase_orders WHERE id=?", po_id)
+
+
+def get_po_by_quote(quote_id: str) -> dict | None:
+    return _one(
+        "SELECT * FROM purchase_orders WHERE quote_id=? ORDER BY created_at DESC LIMIT 1",
+        quote_id,
+    )
 
 
 def get_po_by_session(session_id: str) -> dict | None:
-    with _db() as conn:
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT * FROM purchase_orders WHERE stripe_session_id=? ORDER BY created_at DESC LIMIT 1",
-            (session_id,),
-        ).fetchone()
-        return dict(row) if row else None
+    return _one(
+        "SELECT * FROM purchase_orders WHERE stripe_session_id=? ORDER BY created_at DESC LIMIT 1",
+        session_id,
+    )
 
 
 def get_po_by_payment_intent(payment_intent_id: str) -> dict | None:
-    with _db() as conn:
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT * FROM purchase_orders WHERE stripe_payment_intent_id=? ORDER BY created_at DESC LIMIT 1",
-            (payment_intent_id,),
-        ).fetchone()
-        return dict(row) if row else None
+    return _one(
+        "SELECT * FROM purchase_orders WHERE stripe_payment_intent_id=? ORDER BY created_at DESC LIMIT 1",
+        payment_intent_id,
+    )
 
 
 def get_po_by_charge(charge_id: str) -> dict | None:
-    with _db() as conn:
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT * FROM purchase_orders WHERE stripe_charge_id=? ORDER BY created_at DESC LIMIT 1",
-            (charge_id,),
-        ).fetchone()
-        return dict(row) if row else None
+    return _one(
+        "SELECT * FROM purchase_orders WHERE stripe_charge_id=? ORDER BY created_at DESC LIMIT 1",
+        charge_id,
+    )
 
 
 def set_state(po_id: str, state: POState, **fields: Any) -> None:
@@ -155,6 +157,15 @@ def update_po(po_id: str, **fields: Any) -> None:
     if not po:
         raise ValueError("unknown PO")
     set_state(po_id, POState(po["state"]), **fields)
+
+
+def append_note(po_id: str, note: str) -> None:
+    po = get_po(po_id)
+    if not po:
+        raise ValueError("unknown PO")
+    existing = str(po.get("notes") or "").strip()
+    combined = " | ".join(part for part in (existing, note.strip()) if part)
+    update_po(po_id, notes=combined[-4000:])
 
 
 def list_pos(state: POState | None = None) -> list[dict]:
