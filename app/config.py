@@ -2,7 +2,7 @@
 
 Real buyer charges and supplier releases are independently fail-closed. A
 production deploy can safely render the Trade Desk before Stripe secrets,
-approved quotes, and a durable database are configured.
+approved quotes, operator auth, and a durable order ledger are configured.
 """
 import os
 
@@ -34,6 +34,11 @@ class Settings:
         self.supplier_releases_enabled = _b("SUPPLIER_RELEASES_ENABLED", False)
         self.instant_splits_enabled = _b("INSTANT_SPLITS_ENABLED", False)
 
+        # SQLite is fine for local/manual staging, but serverless filesystems are
+        # not a durable transaction ledger. Keep live checkout off until ORXYZ
+        # has attached a persistent ledger and explicitly acknowledges it here.
+        self.durable_ledger_enabled = _b("DURABLE_LEDGER_ENABLED", False)
+
         # Keep quote economics and buyer assignment server-side.
         self.approved_quotes_json = os.environ.get("ORXYZ_APPROVED_QUOTES_JSON", "")
 
@@ -51,7 +56,12 @@ class Settings:
 
     @property
     def checkout_enabled(self) -> bool:
-        return self.live_payments_enabled and self.stripe_configured and bool(self.approved_quotes_json.strip())
+        return (
+            self.live_payments_enabled
+            and self.durable_ledger_enabled
+            and self.stripe_configured
+            and bool(self.approved_quotes_json.strip())
+        )
 
     @property
     def ops_configured(self) -> bool:
