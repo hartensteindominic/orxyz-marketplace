@@ -2,7 +2,7 @@
 
 Lifecycle:
 PENDING -> FUNDS_CLEARED -> PO_SENT -> SHIPPED -> DELIVERED -> RELEASED
-                                                \-> FROZEN / REFUNDED
+                                                -> FROZEN / REFUNDED
 
 The schema keeps Stripe Checkout Session, PaymentIntent, and Charge IDs
 separate so supplier transfers can use the correct source transaction and
