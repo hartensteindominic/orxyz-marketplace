@@ -39,13 +39,14 @@ Live checkout is **off by default**. `checkout_enabled` becomes true only when a
 
 - `LIVE_PAYMENTS_ENABLED=true`
 - `DURABLE_LEDGER_ENABLED=true`
+- a supported PostgreSQL `DATABASE_URL`
 - `STRIPE_SECRET_KEY`
 - `STRIPE_WEBHOOK_SECRET`
 - a non-empty `ORXYZ_APPROVED_QUOTES_JSON`
 
 Supplier payout is independently gated by `SUPPLIER_RELEASES_ENABLED=true`.
 
-The included SQLite PO ledger is useful for local/manual staging, but it is **not treated as a durable serverless production ledger**. Do not turn on `DURABLE_LEDGER_ENABLED` on a serverless deployment until a persistent transaction store is actually attached and the ledger adapter has been updated accordingly.
+The PO ledger uses PostgreSQL when `DATABASE_URL` is configured. SQLite via `DATABASE_PATH` remains available for local/manual staging, but it is deliberately rejected as the durable backend for live checkout. Setting `DURABLE_LEDGER_ENABLED=true` without a PostgreSQL URL does **not** enable buyer charging.
 
 ## Operator controls
 
@@ -63,11 +64,11 @@ A Stripe dispute freezes the PO. A refund marks it refunded. Large orders still 
 - `app/web.py` — branded buyer-facing Trade Desk pages
 - `app/quotes.py` — server-side approved quote registry and pricing/buyer binding
 - `app/stripe_client.py` — Checkout, destination-split and controlled-transfer helpers
-- `app/po.py` — PO/order ledger
+- `app/po.py` — SQLite staging / PostgreSQL durable PO ledger
 - `app/release.py` — pure release-rule engine
 - `app/suppliers.py` — supplier registry and rail classification
 - `app/config.py` — fail-closed environment controls
-- `tests/` — quote, configuration and release-rule tests
+- `tests/` — quote, configuration, ledger and release-rule tests
 
 ## Local validation
 
@@ -80,8 +81,16 @@ pytest -q
 uvicorn app.main:app --reload
 ```
 
-Copy `.env.example` to `.env` for local configuration. Never commit real Stripe keys, operator tokens or buyer quote data.
+Copy `.env.example` to `.env` for local configuration. Never commit real Stripe keys, operator tokens, database credentials or buyer quote data.
 
 ## Vercel
 
 `pyproject.toml` declares `app.main:app` as the FastAPI entrypoint and `vercel.json` configures the Python function. A staged deployment is safe with the live switches left at their default `false` values.
+
+Before enabling live buyer checkout on Vercel:
+
+1. attach a persistent PostgreSQL database and set its server-side `DATABASE_URL`;
+2. verify the ledger can create/read/update an order in that environment;
+3. configure Stripe secrets and the approved quote registry server-side;
+4. keep `SUPPLIER_RELEASES_ENABLED=false` until the supplier-release workflow is separately validated; and
+5. only then deliberately set `DURABLE_LEDGER_ENABLED=true` and `LIVE_PAYMENTS_ENABLED=true`.
