@@ -1,46 +1,87 @@
-# ORXYZ Marketplace — Stripe Connect money rails
+# ORXYZ Marketplace — controlled industrial checkout
 
-Principal-spread automation for ORXYZ's industrial sourcing business:
-buyer pays ORXYZ → supplier is paid their cost → ORXYZ keeps the spread →
-supplier direct-ships to the buyer.
+ORXYZ Marketplace is the secure payment/settlement layer for ORXYZ principal-resale transactions:
 
-## Two money rails (see `app/suppliers.py`)
+**buyer accepts an ORXYZ quote → buyer pays ORXYZ → payment is verified → ORXYZ confirms the supplier PO → supplier direct-ships → supplier cost is released under the approved rail → ORXYZ retains the trading spread subject to fees, taxes, refunds, claims and reserves.**
 
-- **Connect rail** — suppliers in Stripe-supported countries (US, EU/UK,
-  Switzerland, Japan, Singapore, Hong Kong, UAE…). Automatic split via
-  destination charges, or timed transfers via separate charges & transfers.
-- **Manual-wire rail** — mainland-China and Turkey suppliers (not
-  Stripe-supported). Buyer pays ORXYZ; ORXYZ wires the supplier after funds
-  clear, per the standing principal-spread doctrine.
+## Buyer-facing Trade Desk
 
-## Release rules (see `app/release.py`)
+The FastAPI root page is a branded ORXYZ Trade Desk. Buyers enter only:
 
-- <$5,000 + tracking number → auto-release
-- $5,000–$25,000 → release on delivery confirmation
-- >$25,000 → manual approval only
-- Any dispute/chargeback → freeze immediately
+- their approved ORXYZ quote code; and
+- the buyer email bound to that quote.
 
-## Quickstart
+The browser **cannot supply or change** supplier cost, ORXYZ selling price, connected-account ID, supplier rail or payout timing. Those values come from the server-side approved quote registry.
+
+## Two settlement rails
+
+### ORXYZ Trade — default
+
+Controlled settlement for custom, new-supplier and higher-value industrial transactions.
+
+1. Stripe charges the buyer on the ORXYZ platform account.
+2. Webhooks reconcile the Checkout Session, PaymentIntent and Charge IDs.
+3. ORXYZ confirms buyer funds / PO stage.
+4. The release engine applies shipment, delivery, dispute and manual-approval rules.
+5. Eligible Connect suppliers receive a later Stripe transfer; manual-wire suppliers remain a human bank/AP action.
+
+### ORXYZ Instant — exception
+
+An approved quote may use an immediate destination-charge split only when:
+
+- the supplier is eligible and onboarded to Stripe Connect;
+- the approved quote explicitly uses `release_mode=instant`; and
+- `INSTANT_SPLITS_ENABLED=true` is deliberately enabled server-side.
+
+## Fail-closed live controls
+
+Live checkout is **off by default**. `checkout_enabled` becomes true only when all of these are present:
+
+- `LIVE_PAYMENTS_ENABLED=true`
+- `DURABLE_LEDGER_ENABLED=true`
+- `STRIPE_SECRET_KEY`
+- `STRIPE_WEBHOOK_SECRET`
+- a non-empty `ORXYZ_APPROVED_QUOTES_JSON`
+
+Supplier payout is independently gated by `SUPPLIER_RELEASES_ENABLED=true`.
+
+The included SQLite PO ledger is useful for local/manual staging, but it is **not treated as a durable serverless production ledger**. Do not turn on `DURABLE_LEDGER_ENABLED` on a serverless deployment until a persistent transaction store is actually attached and the ledger adapter has been updated accordingly.
+
+## Operator controls
+
+`/ops/*` endpoints require `Authorization: Bearer <ORXYZ_OPS_TOKEN>` and remain unavailable unless the server-side token is at least 24 characters.
+
+The operator lifecycle is:
+
+`PENDING → FUNDS_CLEARED → PO_SENT → SHIPPED → DELIVERED → RELEASED`
+
+A Stripe dispute freezes the PO. A refund marks it refunded. Large orders still require the manual-approval rule before release.
+
+## Project layout
+
+- `app/main.py` — FastAPI Trade Desk, checkout, Stripe webhooks and protected operator routes
+- `app/web.py` — branded buyer-facing Trade Desk pages
+- `app/quotes.py` — server-side approved quote registry and pricing/buyer binding
+- `app/stripe_client.py` — Checkout, destination-split and controlled-transfer helpers
+- `app/po.py` — PO/order ledger
+- `app/release.py` — pure release-rule engine
+- `app/suppliers.py` — supplier registry and rail classification
+- `app/config.py` — fail-closed environment controls
+- `tests/` — quote, configuration and release-rule tests
+
+## Local validation
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # fill in STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET
+python -m compileall -q app
+pytest -q
 uvicorn app.main:app --reload
 ```
 
-## Layout
+Copy `.env.example` to `.env` for local configuration. Never commit real Stripe keys, operator tokens or buyer quote data.
 
-- `app/main.py` — FastAPI: checkout session creation + Stripe webhook
-- `app/stripe_client.py` — charge / split / hold / release helpers
-- `app/release.py` — the release-rule engine (pure logic, fully tested)
-- `app/po.py` — PO ledger (sqlite): PENDING → FUNDS_CLEARED → PO_SENT →
-  SHIPPED → DELIVERED → RELEASED / FROZEN
-- `app/suppliers.py` — supplier registry with rail classification
-- `app/config.py` — env + thresholds
+## Vercel
 
-## Status
-
-Staged build. Stage 1 (single Payment Link lane) goes live only after the
-first manual principal-spread dollar lands; see
-`../orxyz/stripe-connect-marketplace-build-plan-2026-09-14.md`.
+`pyproject.toml` declares `app.main:app` as the FastAPI entrypoint and `vercel.json` configures the Python function. A staged deployment is safe with the live switches left at their default `false` values.
