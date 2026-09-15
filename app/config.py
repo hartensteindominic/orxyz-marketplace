@@ -26,17 +26,21 @@ class Settings:
         self.stripe_secret_key = os.environ.get("STRIPE_SECRET_KEY", "").strip()
         self.stripe_webhook_secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
         self.stripe_publishable_key = os.environ.get("STRIPE_PUBLISHABLE_KEY", "").strip()
+
+        # SQLite remains the local/manual staging default. DATABASE_URL is the
+        # production ledger and must point to PostgreSQL before live checkout
+        # can be enabled.
         self.database_path = os.environ.get("DATABASE_PATH", "./orxyz_marketplace.db")
+        self.database_url = os.environ.get("DATABASE_URL", "").strip()
         self.base_url = os.environ.get("BASE_URL", "http://localhost:8000").rstrip("/")
 
-        # Both switches must be explicitly enabled for live money movement.
+        # Buyer charging and supplier release are intentionally independent.
         self.live_payments_enabled = _b("LIVE_PAYMENTS_ENABLED", False)
         self.supplier_releases_enabled = _b("SUPPLIER_RELEASES_ENABLED", False)
         self.instant_splits_enabled = _b("INSTANT_SPLITS_ENABLED", False)
 
-        # SQLite is fine for local/manual staging, but serverless filesystems are
-        # not a durable transaction ledger. Keep live checkout off until ORXYZ
-        # has attached a persistent ledger and explicitly acknowledges it here.
+        # This is an operator acknowledgement, not proof by itself. The
+        # checkout_enabled property also verifies a supported durable backend.
         self.durable_ledger_enabled = _b("DURABLE_LEDGER_ENABLED", False)
 
         # Keep quote economics and buyer assignment server-side.
@@ -55,10 +59,17 @@ class Settings:
         return bool(self.stripe_secret_key and self.stripe_webhook_secret)
 
     @property
+    def durable_database_configured(self) -> bool:
+        """Return true only for the durable backend supported by app.po."""
+        url = self.database_url.lower()
+        return url.startswith("postgresql://") or url.startswith("postgres://")
+
+    @property
     def checkout_enabled(self) -> bool:
         return (
             self.live_payments_enabled
             and self.durable_ledger_enabled
+            and self.durable_database_configured
             and self.stripe_configured
             and bool(self.approved_quotes_json.strip())
         )
