@@ -47,7 +47,7 @@ class Settings:
         self.approved_quotes_json = os.environ.get("ORXYZ_APPROVED_QUOTES_JSON", "")
 
         # Required for /ops/* mutations and order visibility.
-        self.ops_token = os.environ.get("ORXYZ_OPS_TOKEN", "").strip()
+        self.ops_token = os.environ.get("ORXYZ_OPS_TOKEN", "").strip()\n\n        # Provider-confirmed bandwidth settlement ingestion. Keep this secret\n        # server-side; never expose it in the wallet client.\n        self.bandwidth_ingest_token = os.environ.get("ORXYZ_BANDWIDTH_INGEST_TOKEN", "").strip()\n        self.bandwidth_reward_share = _f("ORXYZ_BANDWIDTH_REWARD_SHARE", 0.05)
 
         self.auto_release_max_usd = _f("AUTO_RELEASE_MAX_USD", 5000.0)
         self.manual_approval_min_usd = _f("MANUAL_APPROVAL_MIN_USD", 25000.0)
