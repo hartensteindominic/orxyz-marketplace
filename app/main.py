@@ -39,6 +39,7 @@ from .release import ReleaseContext, ReleaseDecision, decide
 from .stripe_client import create_checkout, payment_references, release_supplier_funds
 from .suppliers import get_supplier
 from .web import result_page, trade_desk_page
+from .finance_web import wallet_page, control_page
 
 
 app = FastAPI(title="ORXYZ Marketplace", docs_url=None, redoc_url=None)
@@ -96,6 +97,16 @@ def _string_id(value) -> str | None:
 @app.get("/", include_in_schema=False)
 def home():
     return trade_desk_page(checkout_enabled=settings.checkout_enabled)
+
+
+@app.get("/wallet", include_in_schema=False)
+def wallet():
+    return wallet_page()
+
+
+@app.get("/control", include_in_schema=False)
+def control():
+    return control_page()
 
 
 @app.get("/success", include_in_schema=False)
