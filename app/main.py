@@ -40,6 +40,7 @@ from .stripe_client import create_checkout, payment_references, release_supplier
 from .suppliers import get_supplier
 from .web import result_page, trade_desk_page
 from .finance_web import wallet_page, control_page
+from .bandwidth import credit_verified_bandwidth, get_bandwidth_wallet, list_bandwidth_settlements
 
 
 app = FastAPI(title="ORXYZ Marketplace", docs_url=None, redoc_url=None)
@@ -107,6 +108,53 @@ def wallet():
 @app.get("/control", include_in_schema=False)
 def control():
     return control_page()
+
+
+@app.post("/api/bandwidth/provider-settlement", include_in_schema=False)
+async def bandwidth_provider_settlement(request: Request):
+    """Ingest a provider-confirmed billable bandwidth settlement.
+
+    A production provider adapter/webhook should call this server-to-server
+    after authenticating the provider event. Browser/user supplied usage is
+    intentionally not trusted.
+    """
+    token = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+    if not settings.bandwidth_ingest_token or not secrets.compare_digest(
+        token, settings.bandwidth_ingest_token
+    ):
+        raise HTTPException(status_code=401, detail="invalid bandwidth ingest token")
+    body = await request.json()
+    try:
+        return credit_verified_bandwidth(
+            provider_event_id=str(body["event_id"]),
+            provider=str(body["provider"]),
+            user_id=str(body["user_id"]),
+            verified_gb=float(body["verified_gb"]),
+            provider_revenue_usd=float(body["provider_revenue_usd"]),
+            reward_share=settings.bandwidth_reward_share,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/bandwidth/wallet/{user_id}", include_in_schema=False)
+def bandwidth_wallet(user_id: str):
+    wallet = get_bandwidth_wallet(user_id)
+    if not wallet:
+        return {
+            "user_id": user_id,
+            "spendable_orxyz": 0,
+            "lifetime_orxyz": 0,
+            "verified_gb": 0,
+            "provider_revenue_usd": 0,
+        }
+    return wallet
+
+
+@app.get("/ops/bandwidth/settlements", include_in_schema=False)
+def bandwidth_settlements(request: Request, limit: int = 100):
+    _require_ops(request)
+    return {"settlements": list_bandwidth_settlements(limit)}
 
 
 @app.get("/success", include_in_schema=False)
